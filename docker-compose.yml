@@ -1,0 +1,254 @@
+version: '3.8'
+
+# Define networks for proper isolation
+networks:
+  frontend-network:
+    driver: bridge
+  backend-network:
+    driver: bridge
+  database-network:
+    driver: bridge
+
+services:
+  # API Gateway Service
+  api-gateway:
+    build: 
+      context: ./backend/api-gateway
+      dockerfile: Dockerfile.dev
+    container_name: doghouse-api-gateway
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend/api-gateway:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/doghouse
+      - AUTH_SERVICE_URL=http://auth-service:3001
+      - USER_SERVICE_URL=http://user-service:3002
+      - PET_SERVICE_URL=http://pet-service:3003
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=debug
+    depends_on:
+      - postgres
+      - redis
+      - auth-service
+      - user-service
+      - pet-service
+    networks:
+      - frontend-network
+      - backend-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Authentication Service
+  auth-service:
+    build:
+      context: ./backend/auth-service
+      dockerfile: Dockerfile.dev
+    container_name: doghouse-auth-service
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend/auth-service:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/doghouse
+      - JWT_SECRET=dev_secret_key_replace_in_production
+      - JWT_EXPIRATION=8h
+      - LOG_LEVEL=debug
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - backend-network
+      - database-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # User Service
+  user-service:
+    build:
+      context: ./backend/user-service
+      dockerfile: Dockerfile.dev
+    container_name: doghouse-user-service
+    ports:
+      - "3002:3002"
+    volumes:
+      - ./backend/user-service:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/doghouse
+      - LOG_LEVEL=debug
+    depends_on:
+      - postgres
+    networks:
+      - backend-network
+      - database-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Pet Service
+  pet-service:
+    build:
+      context: ./backend/pet-service
+      dockerfile: Dockerfile.dev
+    container_name: doghouse-pet-service
+    ports:
+      - "3003:3003"
+    volumes:
+      - ./backend/pet-service:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/doghouse
+      - LOG_LEVEL=debug
+    depends_on:
+      - postgres
+    networks:
+      - backend-network
+      - database-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Frontend Application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: doghouse-frontend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - REACT_APP_API_URL=http://localhost:3000
+    networks:
+      - frontend-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:14-alpine
+    container_name: doghouse-postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=doghouse
+    networks:
+      - database-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Redis for Caching
+  redis:
+    image: redis:7-alpine
+    container_name: doghouse-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - backend-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ELK Stack for Logging (Optional for local development)
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.0
+    container_name: doghouse-elasticsearch
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - backend-network
+    restart: unless-stopped
+    profiles:
+      - logging
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.17.0
+    container_name: doghouse-kibana
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - backend-network
+    restart: unless-stopped
+    profiles:
+      - logging
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:7.17.0
+    container_name: doghouse-logstash
+    ports:
+      - "5044:5044"
+    volumes:
+      - ./config/logstash.conf:/usr/share/logstash/pipeline/logstash.conf
+    depends_on:
+      - elasticsearch
+    networks:
+      - backend-network
+    restart: unless-stopped
+    profiles:
+      - logging
+
+volumes:
+  postgres_data:
+    name: doghouse-postgres-data
+  redis_data:
+    name: doghouse-redis-data
+  elasticsearch_data:
+    name: doghouse-elasticsearch-data 

@@ -1,0 +1,21 @@
+FROM node:18-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Install dependencies
+COPY package*.json ./
+RUN npm ci
+
+# Copy source code
+COPY . .
+
+# Health check (allow longer intervals for development)
+HEALTHCHECK --interval=60s --timeout=5s --start-period=60s --retries=3 \
+  CMD wget -qO- http://localhost:3000/health > /dev/null || exit 1
+
+# Expose API port
+EXPOSE 3000
+
+# Start in development mode with hot-reloading
+CMD ["npm", "run", "start:dev"] 
